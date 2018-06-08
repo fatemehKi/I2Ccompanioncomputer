@@ -1,142 +1,53 @@
-/*
- * I2C.cpp
- *
- *  Created on: Jan 31, 2015
- *      Author: trevor
- */
+#include <stdlib.h>
+#include <unistd.h>
+#include <linux/i2c.h>
+#include <linux/i2c-dev.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdio.h>
 
-#include "I2C.h"
-
-
-namespace jetsonhardware {
-namespace i2c {
-
-
-I2C::I2C(const char *name,
-	 const char *devname,
-	 int bus,
-	 uint16_t address,
-	 uint32_t frequency,
-	 int irq) :
-	// base class
-	CDev(name, devname, irq),
-	// public
-	// protected
-	_retries(0),
-	// private
-	_bus(bus),
-	_address(address),
-	_frequency(frequency),
-	_dev(nullptr)
+int main(void)
 {
-	// fill in _device_id fields for a I2C device
-	_device_id.devid_s.bus_type = DeviceBusType_I2C;
-	_device_id.devid_s.bus = bus;
-	_device_id.devid_s.address = address;
-	// devtype needs to be filled in by the driver
-	_device_id.devid_s.devtype = 0;
+  // Set up some variables that we'll use along the way
+  char rxBuffer[32];  // receive buffer
+  char txBuffer[32];  // transmit buffer
+  int gyroAddress = 0x1b; // gyro device address
+  //int xlAddress = 0x53;   // accelerometer device address
+  int tenBitAddress = 0;  // is the device's address 10-bit? Usually not.
+  int opResult = 0;   // for error checking of operations
+
+  // Create a file descriptor for the I2C bus
+  int i2cHandle = open("/dev/i2c-2", O_RDWR);
+
+  // Tell the I2C peripheral that the device address is (or isn't) a 10-bit
+  //   value. Most probably won't be.
+  opResult = ioctl(i2cHandle, I2C_TENBIT, tenBitAddress);
+
+  // Tell the I2C peripheral what the address of the device is. We're going to
+  //   start out by talking to the gyro.
+  opResult = ioctl(i2cHandle, I2C_SLAVE, gyroAddress);
+
+  // Clear our buffers
+  memset(rxBuffer, 0, sizeof(rxBuffer));
+  memset(txBuffer, 0, sizeof(txBuffer));
+
+  // The easiest way to access I2C devices is through the read/write
+  //   commands. We're going to ask the gyro to read back its "WHO_AM_I"
+  //   register, which contains the I2C address. The process is easy- write the
+  //   desired address, the execute a read command.
+  txBuffer[0] = 0x00; // This is the address we want to read from.
+  opResult = write(i2cHandle, txBuffer, 1);
+  if (opResult != 1) printf("No ACK bit!\n");
+  opResult = read(i2cHandle, rxBuffer, 1);
+  printf("Part ID: %d\n", (int)rxBuffer[0]); // should print 105
+
+  // Next, we'll query the accelerometer using the same process- but first,
+  //   we need to change the slave address!
+  opResult = ioctl(i2cHandle, I2C_SLAVE, xlAddress);
+  txBuffer[0] = 0x00;  // This is the address to read from.
+  opResult = write(i2cHandle, txBuffer, 1);
+  if (opResult != 1) printf("No ACK bit!\n");
+  opResult = read(i2cHandle, rxBuffer, 1);
+  printf("Part ID: %d\n", (int)rxBuffer[0]); // should print 229
 }
-
-
-I2C::~I2C() {
-
-}
-
-void I2C::i2c_open(std::string file, int mode) {
-	_handle = open(file.c_str(), mode);
-}
-
-
-bool I2C::is_ten_bit_addr(unsigned int addr) const {
-	unsigned int v = addr; // 32-bit word to find the log base 2 of
-	unsigned int r = 0; // r will be lg(v)
-
-	while (v >>= 1) // unroll for more speed...
-	{
-	  r++;
-	}
-
-	return r == 10;
-}
-
-
-
-void I2C::write_byte(unsigned int addr, uint8_t sub_addr, unsigned int data) {
-	set_ten_bit(is_ten_bit_addr(addr));
-	set_slave(addr);
-	clear_buffers();
-}
-
-uint8_t I2C::read_byte(unsigned int addr, uint8_t sub_addr) {
-	set_ten_bit(is_ten_bit_addr(addr));
-	set_slave(addr);
-	clear_buffers();
-	set_tx(sub_addr);
-	i2c_write(1);
-	if (_op_result != 1) printf("No ACK bit!\n");
-	i2c_read(1);
-	printf("Part ID: %d\n", (int)_rx_buffer[0]); // should print 105
-	return _rx_buffer[0];
-}
-
-
-
-void I2C::set_ten_bit(bool is_ten_bit) {
-	if (is_ten_bit) {
-		_ten_bit_address = 1;
-	} else {
-		_ten_bit_address = 0;
-	}
-	_op_result = ioctl(_handle, I2C_TENBIT, _ten_bit_address);
-}
-
-void I2C::set_slave(char addr) {
-	_op_result = ioctl(_handle, I2C_SLAVE, addr);
-}
-
-char* I2C::command(char slave_addr, char tx_addr, size_t write_bytes, size_t read_bytes) {
-	set_slave(slave_addr);
-	return command(tx_addr, write_bytes, read_bytes);
-}
-
-char* I2C::command(char tx_addr, size_t write_bytes, size_t read_bytes) {
-	clear_buffers();
-	set_tx(tx_addr);
-	i2c_write(write_bytes);
-	i2c_read(read_bytes);
-	return _rx_buffer;
-}
-
-void I2C::set_tx(char addr) {
-	_tx_buffer[0] = addr;
-}
-
-void I2C::i2c_write(size_t bytes) {
-	_op_result = write(_handle, _tx_buffer, bytes);
-}
-
-void I2C::i2c_read(size_t bytes) {
-	_op_result = read(_handle, _rx_buffer, bytes);
-}
-
-const char* I2C::get_rx_buffer() const {
-	return _rx_buffer;
-}
-
-
-void I2C::clear_tx() {
-	memset(_tx_buffer, 0, sizeof(_tx_buffer));
-}
-
-void I2C::clear_rx() {
-	memset(_rx_buffer, 0, sizeof(_rx_buffer));
-}
-
-void I2C::clear_buffers() {
-	clear_tx();
-	clear_rx();
-}
-
-} /* namespace i2c */
-} /* namespace jetsonhardware */
-
